@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Testing and build outputs
+build/
+dist/
+coverage/
+*.log
+
+# Environment files
+.env*
+!.env.example
+
+# Python
+.venv/
+venv/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# SQLite databases (local runtime)
+data/*.db
+data/*.db-journal
+data/*.db-wal
+*.sqlite
+*.sqlite3
+
+# Editor and OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
