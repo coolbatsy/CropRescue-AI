@@ -1,0 +1,94 @@
+# Backend operations and security
+
+Python 3.12+, FastAPI, SQLAlchemy 2, Pydantic 2, Alembic, psycopg, PyJWT and Argon2id. Frontend UI, CSS and existing routes are retained. Business records and decisions now use `/api/v1`.
+
+## Local quick start (Windows PowerShell)
+
+From this backend directory:
+
+```powershell
+python -m venv .venv
+.venv/Scripts/python -m pip install -r requirements.lock.txt
+python setup_local.py
+.venv/Scripts/python -m alembic upgrade head
+.venv/Scripts/python -m app.seed
+.venv/Scripts/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+`setup_local.py` creates an ignored `.env` only when absent, with random secrets, development-only demo login and an explicit portable SQLite database. It does not overwrite existing settings. Linux/macOS use `.venv/bin/python`.
+
+If ensurepip is restricted on Windows, use the existing Python pip to install into the environment: `python -m pip --python .venv/Scripts/python.exe install -r requirements.lock.txt`. Set TEMP/TMP to a writable task directory if sandbox temporary paths are inaccessible.
+
+From the project root in another terminal:
+
+```sh
+npm install
+npm run dev
+```
+
+Use `http://127.0.0.1:5173`; Vite proxies `/api` to port 8000. Choose a role and use **Continue with demo mode (development only)** for seeded sample accounts. Real registration uses email or mobile and an 8+ character password. A new account starts with no records and saves a location during onboarding. Do not reuse real passwords in a development deployment.
+
+The backend also serves the production `dist/` at port 8000 after `npm run build`. Use a reverse proxy with HTTPS in production. API documentation: `/docs`; schema: `/openapi.json`; health: `/api/v1/health`.
+
+## PostgreSQL / Supabase
+
+Production requires PostgreSQL. Configure `DATABASE_URL=postgresql+psycopg://USER:PASSWORD@HOST:5432/DATABASE` in `.env` (URL-encode credentials). For Supabase use the database connection/pooler credentials, not the anonymous API key, and append `?sslmode=require`. Set `JWT_SECRET` to a random 32+ character secret. Run `python -m alembic upgrade head` before starting the server. Tables are not implicitly created on startup.
+
+For Docker, set `POSTGRES_PASSWORD` in the shell, then run `docker compose up -d postgres` from the root. Configure matching database credentials in `.env`. Bindings are loopback-only; the database volume persists. The Docker daemon must be installed and running. Never run `docker compose down -v` on data you need.
+
+Optional integration tests can use an existing PostgreSQL database via `TEST_DATABASE_URL`. Each test creates a unique disposable schema, runs there and drops only that schema. The test database user needs CREATE SCHEMA permissions. No production tables are used. SQLite is used by default for portable tests.
+
+## Authentication
+
+- Passwords are Argon2id hashes; hashes are never included in serializers.
+- JWT access tokens expire after 15 minutes and are sent only in an HttpOnly, SameSite=Lax cookie scoped to `/api`. No access/refresh credentials are written to browser storage. There are no refresh tokens; expiration requires login again.
+- A database session row permits immediate logout revocation. CSRF tokens are HMAC-bound to that session, returned by login and `/auth/me`, held in JavaScript memory and required on authenticated writes.
+- Origin allowlisting protects browser writes and CORS uses explicit configured origins with credentials. Production must set `COOKIE_SECURE=true`, `APP_ENV=production`, `DEMO_ENABLED=false` and a PostgreSQL URL; startup rejects other production configurations.
+- Development demo sign-in exists only when explicitly enabled. Sample accounts and businesses are marked demo/unverified. The seed command refuses production and requires a random development seed password.
+- Authentication attempts are counted in the database by an HMAC of the immediate client IP (no raw IP persisted). A per-minute limit protects small deployments. In production use an atomic gateway/Redis rate limiter with per-IP and per-identifier limits, bounded retention, trusted proxy configuration, TLS termination, body limits and monitoring. Database count/insert rate limiting can admit a few concurrent excess attempts; it is not a substitute for gateway protection at scale.
+- No external password reset provider, email/mobile ownership verification or notification transport is configured. Forgot-password UI states this. No fake reset message is sent.
+- Old demo localStorage entries are neither imported nor consulted; the user may clear obsolete prototype data through browser settings. Only the language preference is persisted by the new frontend.
+
+## Records and business rules
+
+- Only farmers create/modify their crops; only buyers manage their requirements and business profiles. Every API action checks role and ownership. Public discovery omits email/mobile and anonymizes farmer IDs.
+- Deletion is cancellation, retaining audit/offer history. Committed listings/requirements cannot be edited or cancelled.
+- Stock is expressed in the listing unit. Offered quantities are converted before comparison. On acceptance, the crop row is locked on PostgreSQL and conditional SQL updates guard the remaining stock in all dialects. Offer transition and requirement capacity updates occur in the same transaction; any conflict rolls back everything.
+- Pending offers do not reserve stock. Accepted offers reserve stock until the farmer marks them fulfilled, which moves reserved quantity to sold quantity. Accepted offers cannot be unilaterally withdrawn. No payment or legally binding contract is processed.
+- Offers expire at the end of the stated calendar date (server date). Reads and attempted transitions materialize expired pending statuses. Acceptance rechecks expiry, crop status/deadline and any linked buying requirement. Reject/withdraw apply only to pending offers. Repeated terminal transitions return 409.
+- Requirements track capacity committed by linked accepted offers. Offers not linked to a requirement reserve crop stock but do not implicitly change unrelated demand. Frontend responses to farmer interests link the offer to that requirement.
+- Crops refer to the owner's saved location; editing a profile location updates the location shown for that user's listings. Precise coordinates are only stored when explicitly provided with GPS source; no reverse geocoding or road distance is fabricated.
+- Small optional raster images are accepted as HTTPS URLs or data URLs and stored in the database for the prototype. Production should move uploads to validated object storage, malware scanning and signed upload URLs. SVG data URLs are rejected.
+
+## Decision semantics
+
+Financial amounts are calculated with Decimal and returned as decimal strings, rounded half-up to paise. Quantities retain four decimal places in storage. One quintal = 100 kg; one tonne = 10 quintals. Inputs specify quantity and price units. All entered costs are INR totals for the entire lot except the explicit per-unit/day storage field. Spoilage reduces saleable quantity once. Quality discounts apply only to saleable future revenue. Negative net proceeds are returned with warnings.
+
+Matching checks crop, remaining quantity/minimum lot, grade, deadlines, delivery terms and budget compatibility. Weights are explicit in `buyer_matching_service.py`. Location contributes to fit; cross-state delivery is flagged as requiring confirmation. A requirement maximum is an indicative budget, never a confirmed offer. Missing budgets and net estimates remain null. Transport uses configurable same-district/state/interstate cost bands; distance remains unavailable even when GPS exists because routing is not integrated.
+
+Sell/wait compares immediate sale, storage and a feasible alternative requirement. It excludes waiting when storage, price or deadline makes it infeasible. Partial alternatives leave unsold quantities unvalued. Partial allocation is a transparent greedy feasible plan, not a globally optimal solution. Separate costs are charged per allocated buyer. No forecasts or profit guarantees are claimed.
+
+## Market observations and audit
+
+Historical prices are stored separately from offers. The opt-in seed inserts an explicitly synthetic 15–28 October 2026 dataset for the existing location/crop choices. Filters query real stored records; prices are not generated by the browser. No AGMARKNET or other external importer is connected. Only an authorized importer should create `observed` records, retaining source record IDs and retrieval times. Audit events store actor, event, entity ID and non-sensitive metadata, never passwords or tokens.
+
+## Tests and migrations
+
+```sh
+python -m pytest -q
+python -m alembic check
+```
+
+If sandbox temp directories fail, provide a new absolute writable `--basetemp` under the workspace. Tests exercise auth, ownership, privacy, CSRF, rate limiting, CRUD/filtering, unit conversion, price uncertainty, interests, offer state transitions and competing acceptance requests. The initial Alembic migration is explicit and versioned. Run migrations against an empty database and back up existing databases before upgrades.
+
+## Deployment still required
+
+Provision a managed PostgreSQL database, configure real secrets/origins/TLS, disable demo mode, choose a hosting environment for the Python service, run migrations, enable an atomic edge rate limiter and backups, and supply authorized external market/distance/messaging services when needed. Static Sites hosting alone cannot execute the FastAPI process. No hosted backend is claimed.
+
+References used: FastAPI JWT security documentation (https://fastapi.tiangolo.com/tutorial/security/oauth2-jwt/) and SQLAlchemy 2 ORM DML documentation (https://docs.sqlalchemy.org/en/20/orm/queryguide/dml.html).
+
+## Current workspace PostgreSQL
+
+The API is configured for PostgreSQL 17.11 on loopback port 55432. Docker was unavailable, so official EDB binaries were checksum-verified and initialized in workspace work/. This runtime is not included in the ZIP. All 15 integration tests pass on PostgreSQL, and Alembic reports no schema drift. The old SQLite database remains intact.
+
+To restart the database in this original workspace, run the postgres.exe under work/postgresql/pgsql/bin with arguments -D work/postgresql-data-qa -h 127.0.0.1 -p 55432 from the workspace root, then start Uvicorn and Vite as documented. On another machine provision PostgreSQL/Docker using the instructions above.
