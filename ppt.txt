@@ -1,0 +1,8 @@
+PPT Structure: 
+> Introduction [Project Name, Team Name, Members]
+> What is it and How it works? 
+> The problems faced by people in agriculture & how we are trying to fix it. 
+> How our Tech Stack supports it and the architecture behind it.
+> Initially open source and then a functional source of revenue. 
+> Challenges Posed and a Conclusion. 
+
